@@ -1,4 +1,3 @@
 __pycache__/
 *.py[cod]
 worker/*.log
-worker/config.json

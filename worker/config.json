@@ -1,0 +1,19 @@
+{
+  "username": "",
+  "password": "",
+  "domain": "",
+  "portal_origin": "https://net.szu.edu.cn",
+  "ac_id": "12",
+  "device": "Windows 10",
+  "platform": "Windows",
+  "connectivity_test_url": "https://www.baidu.com/",
+  "failure_threshold": 3,
+  "connectivity_timeout_seconds": 8,
+  "probe_interval_seconds": 300,
+  "login_verify_attempts": 5,
+  "login_verify_interval_seconds": 1,
+  "login_retry_cooldown_seconds": 30,
+  "request_timeout_seconds": 10,
+  "captcha_id": "",
+  "captcha_value": ""
+}

@@ -16,23 +16,82 @@ const props = defineProps({
 
 const campusStatus = ref(null)
 const campusStatusError = ref('')
+const campusUsernameInput = ref('')
+const campusPasswordInput = ref('')
+const campusCredentialsDirty = ref(false)
+const campusCredentialsSaving = ref(false)
+const campusCredentialsMessage = ref('')
+const campusCredentialsMessageTone = ref('success')
 const campusIntervalInput = ref(300)
 const campusIntervalDirty = ref(false)
 const campusSettingsSaving = ref(false)
 const campusSettingsMessage = ref('')
 const campusSettingsMessageTone = ref('success')
 let campusStatusTimer = null
+let campusCredentialsSaveTimer = null
+let campusCredentialsRevision = 0
+
+const CREDENTIALS_SAVE_DELAY_MS = 700
 
 async function loadCampusStatus() {
   try {
     const nextStatus = await props.requestBackend('/api/plugins/colszunet/status')
     campusStatus.value = nextStatus
+    if (!campusCredentialsDirty.value && !campusCredentialsSaving.value) {
+      campusUsernameInput.value = nextStatus.username
+      campusPasswordInput.value = nextStatus.password
+    }
     if (!campusIntervalDirty.value && !campusSettingsSaving.value) {
       campusIntervalInput.value = nextStatus.probe_interval_seconds
     }
     campusStatusError.value = ''
   } catch (error) {
     campusStatusError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function markCampusCredentialsDirty() {
+  campusCredentialsDirty.value = true
+  campusCredentialsRevision += 1
+  campusCredentialsMessage.value = ''
+  if (campusCredentialsSaveTimer !== null) {
+    window.clearTimeout(campusCredentialsSaveTimer)
+  }
+  campusCredentialsSaveTimer = window.setTimeout(() => {
+    campusCredentialsSaveTimer = null
+    saveCampusCredentials()
+  }, CREDENTIALS_SAVE_DELAY_MS)
+}
+
+async function saveCampusCredentials() {
+  const revision = campusCredentialsRevision
+  campusCredentialsSaving.value = true
+  campusCredentialsMessage.value = ''
+  try {
+    const nextStatus = await props.requestBackend('/api/plugins/colszunet/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: campusUsernameInput.value,
+        password: campusPasswordInput.value,
+      }),
+    })
+    campusStatus.value = nextStatus
+    if (revision !== campusCredentialsRevision) {
+      return
+    }
+    campusCredentialsDirty.value = false
+    campusCredentialsMessageTone.value = 'success'
+    campusCredentialsMessage.value = nextStatus.credentials_configured
+      ? '账号密码已自动保存'
+      : '已保存，请填写完整账号密码后启动监控'
+  } catch (error) {
+    if (revision !== campusCredentialsRevision) {
+      return
+    }
+    campusCredentialsMessageTone.value = 'error'
+    campusCredentialsMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    campusCredentialsSaving.value = false
   }
 }
 
@@ -82,6 +141,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (campusStatusTimer !== null) {
     window.clearInterval(campusStatusTimer)
+  }
+  if (campusCredentialsSaveTimer !== null) {
+    window.clearTimeout(campusCredentialsSaveTimer)
   }
 })
 </script>
@@ -147,6 +209,41 @@ onBeforeUnmount(() => {
           <span class="history-legend-item"><i class="tone-pending"></i>暂无记录</span>
         </div>
       </article>
+    </div>
+    <div v-if="campusStatus" class="campus-credentials-panel">
+      <div class="campus-settings-copy">
+        <strong>校园网账号密码</strong>
+        <span>停止输入约 700 毫秒后自动保存</span>
+      </div>
+      <div class="campus-credentials-form">
+        <label class="campus-credential-field">
+          <span>账号</span>
+          <input
+            v-model="campusUsernameInput"
+            type="text"
+            autocomplete="username"
+            aria-label="校园网账号"
+            @input="markCampusCredentialsDirty"
+          />
+        </label>
+        <label class="campus-credential-field">
+          <span>密码</span>
+          <input
+            v-model="campusPasswordInput"
+            type="password"
+            autocomplete="current-password"
+            aria-label="校园网密码"
+            @input="markCampusCredentialsDirty"
+          />
+        </label>
+        <span
+          v-if="campusCredentialsSaving || campusCredentialsMessage"
+          class="campus-settings-message"
+          :class="`is-${campusCredentialsMessageTone}`"
+        >
+          {{ campusCredentialsSaving ? '保存中' : campusCredentialsMessage }}
+        </span>
+      </div>
     </div>
     <div v-if="campusStatus" class="campus-settings-panel">
       <div class="campus-settings-copy">

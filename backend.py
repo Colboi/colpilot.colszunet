@@ -53,6 +53,9 @@ class CampusNetworkStatus(BaseModel):
     current: CampusStatusItem
     listener: CampusStatusItem
     history: list[CampusHistoryItem]
+    username: str
+    password: str
+    credentials_configured: bool
     probe_interval_seconds: int
     updated_at: str
 
@@ -119,29 +122,53 @@ class ColszunetPlugin:
         }
 
     def update_settings(self, settings: dict[str, object], enabled: bool) -> None:
-        value = settings.get('probe_interval_seconds')
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 1:
-            raise ValueError('probe_interval_seconds must be a positive number')
-        if isinstance(value, float) and not value.is_integer():
-            raise ValueError('probe_interval_seconds must be an integer')
+        supported_keys = {'username', 'password', 'probe_interval_seconds'}
+        unknown_keys = sorted(set(settings) - supported_keys)
+        if unknown_keys:
+            raise ValueError(f'unsupported settings: {", ".join(unknown_keys)}')
+        if not settings:
+            raise ValueError('settings must not be empty')
 
         with self.lock:
             config = self._read_config_locked()
-            config['probe_interval_seconds'] = int(value)
+            updated_config = dict(config)
+            if 'username' in settings:
+                username = settings['username']
+                if not isinstance(username, str):
+                    raise ValueError('username must be a string')
+                updated_config['username'] = username
+            if 'password' in settings:
+                password = settings['password']
+                if not isinstance(password, str):
+                    raise ValueError('password must be a string')
+                updated_config['password'] = password
+            if 'probe_interval_seconds' in settings:
+                value = settings['probe_interval_seconds']
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 1:
+                    raise ValueError('probe_interval_seconds must be a positive number')
+                if isinstance(value, float) and not value.is_integer():
+                    raise ValueError('probe_interval_seconds must be an integer')
+                updated_config['probe_interval_seconds'] = int(value)
+            if updated_config == config:
+                return
             self.config_path.write_text(
-                json.dumps(config, ensure_ascii=False, indent=2) + '\n',
+                json.dumps(updated_config, ensure_ascii=False, indent=2) + '\n',
                 encoding='utf-8',
             )
             self._stop_locked()
-            if enabled:
+            if enabled and self._credentials_configured(updated_config):
                 self._start_locked()
 
     def status(self, enabled: bool) -> CampusNetworkStatus:
         records = self._read_records()
         current = self._current_status(records)
-        listener = self._listener_status(enabled)
         with self.lock:
+            config = self._read_config_locked()
+            username = self._config_text(config, 'username')
+            password = self._config_text(config, 'password')
+            credentials_configured = self._credentials_configured(config)
             probe_interval_seconds = self._probe_interval_seconds_locked()
+        listener = self._listener_status(enabled, credentials_configured)
         now = datetime.now()
         history = [
             self._history_status('24h', now - timedelta(hours=24), records, now, 48),
@@ -151,6 +178,9 @@ class ColszunetPlugin:
             current=current,
             listener=listener,
             history=history,
+            username=username,
+            password=password,
+            credentials_configured=credentials_configured,
             probe_interval_seconds=probe_interval_seconds,
             updated_at=now.strftime(LOG_TIMESTAMP_FORMAT),
         )
@@ -164,6 +194,10 @@ class ColszunetPlugin:
             raise FileNotFoundError(f'colszunet script does not exist: {self.script_path}')
         if not self.config_path.is_file():
             raise FileNotFoundError(f'colszunet config does not exist: {self.config_path}')
+        config = self._read_config_locked()
+        if not self._credentials_configured(config):
+            self.process = None
+            return
         self.process = subprocess.Popen(
             [
                 sys.executable,
@@ -203,6 +237,19 @@ class ColszunetPlugin:
         if not isinstance(settings, dict):
             raise ValueError('colszunet config must contain a JSON object')
         return settings
+
+    @staticmethod
+    def _config_text(config: dict[str, object], key: str) -> str:
+        value = config.get(key)
+        if not isinstance(value, str):
+            raise ValueError(f'colszunet config field must be a string: {key}')
+        return value
+
+    @classmethod
+    def _credentials_configured(cls, config: dict[str, object]) -> bool:
+        return bool(cls._config_text(config, 'username')) and bool(
+            cls._config_text(config, 'password')
+        )
 
     def _probe_interval_seconds_locked(self) -> int:
         value = self._read_config_locked().get('probe_interval_seconds')
@@ -263,13 +310,24 @@ class ColszunetPlugin:
             checked_at=latest.timestamp.strftime(LOG_TIMESTAMP_FORMAT),
         )
 
-    def _listener_status(self, enabled: bool) -> CampusStatusItem:
+    def _listener_status(
+        self,
+        enabled: bool,
+        credentials_configured: bool,
+    ) -> CampusStatusItem:
         if not enabled:
             return CampusStatusItem(
                 label='监听状态',
                 status='已停用',
                 detail='插件已停用，后台监控进程未运行',
                 tone='offline',
+            )
+        if not credentials_configured:
+            return CampusStatusItem(
+                label='监听状态',
+                status='待配置',
+                detail='请填写校园网账号和密码后启动监控',
+                tone='pending',
             )
         runtime = self.runtime_status()
         if runtime['status'] == 'running':

@@ -184,6 +184,17 @@
   background: rgba(15, 23, 42, 0.52);
 }
 
+.campus-credentials-panel {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 13px 15px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.52);
+}
+
 .campus-settings-copy {
   display: flex;
   flex: 1;
@@ -247,6 +258,37 @@
   opacity: 0.55;
 }
 
+.campus-credentials-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.campus-credential-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.campus-credential-field input {
+  width: 170px;
+  box-sizing: border-box;
+  padding: 8px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  color: #f8fafc;
+  background: rgba(30, 41, 59, 0.82);
+  font-size: 12px;
+}
+
+.campus-credential-field input:focus {
+  border-color: rgba(167, 139, 250, 0.6);
+  outline: none;
+}
+
 .campus-settings-message {
   font-size: 10px;
 }
@@ -270,6 +312,10 @@
 
   .campus-settings-panel {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .campus-credentials-panel {
     flex-direction: column;
   }
 
