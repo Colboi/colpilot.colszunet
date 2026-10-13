@@ -1,0 +1,12 @@
+{
+  "id": "colszunet",
+  "name": "校园网监控",
+  "description": "查看校园网当前状态、监听运行情况和近期连通性记录。",
+  "icon": "NET",
+  "category": "网络工具",
+  "color": "#22c55e",
+  "tool_type": "continuous",
+  "view": "colszunet",
+  "frontend": "ui/ColszunetView.vue",
+  "backend": "plugins.colszunet.backend:create_plugin"
+}
