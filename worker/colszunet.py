@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import configparser
 import hashlib
 import hmac
 import json
@@ -168,6 +169,11 @@ def _optional_text(
 
 def _positive_integer(data: dict[str, object], key: str) -> int:
     value = data.get(key)
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())
+        except ValueError as exc:
+            raise ConfigurationError(f"配置项 {key} 需要使用大于零的整数") from exc
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ConfigurationError(f"配置项 {key} 需要使用大于零的整数")
     return value
@@ -175,6 +181,11 @@ def _positive_integer(data: dict[str, object], key: str) -> int:
 
 def _positive_number(data: dict[str, object], key: str) -> float:
     value = data.get(key)
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError as exc:
+            raise ConfigurationError(f"配置项 {key} 需要使用大于零的数字") from exc
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ConfigurationError(f"配置项 {key} 需要使用大于零的数字")
     return float(value)
@@ -188,16 +199,19 @@ def _normalise_url(value: str, key: str) -> str:
     return normalised.rstrip("/")
 
 
-def load_settings(path: Path) -> Settings:
+def load_settings(path: Path, section: str) -> Settings:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("r", encoding="utf-8") as stream:
+            parser.read_file(stream)
     except FileNotFoundError as exc:
         raise ConfigurationError(f"配置文件不存在: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise ConfigurationError(f"配置文件格式错误: {path}: {exc}") from exc
-
-    if not isinstance(raw, dict):
-        raise ConfigurationError("配置文件顶层内容需要使用 JSON 对象")
+    except (OSError, configparser.Error) as exc:
+        raise ConfigurationError(f"配置文件格式错误: {path}") from exc
+    if not parser.has_section(section):
+        raise ConfigurationError(f"配置文件缺少配置节: {section}")
+    raw: dict[str, object] = dict(parser.items(section, raw=True))
 
     domain = _optional_text(raw, "domain")
     if domain and not domain.startswith("@"):
@@ -754,7 +768,7 @@ class PortalClient:
             return {}
         if not self.settings.captcha_id or not self.settings.captcha_value:
             raise CaptchaRequiredError(
-                "校园网当前要求输入验证码，请在 config.json 填写 captcha_id 与 captcha_value"
+                "校园网当前要求输入验证码，请在 config.ini 的 colszunet 配置节填写 captcha_id 与 captcha_value"
             )
         self.logger.info("检测到已填写验证码，继续执行登录")
         return {
@@ -975,8 +989,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).resolve().with_name("config.json"),
+        default=Path(__file__).resolve().parents[1] / "config.ini",
         help="配置文件路径",
+    )
+    parser.add_argument(
+        "--section",
+        default="colszunet",
+        help="配置节名称",
     )
     parser.add_argument(
         "--verbose",
@@ -989,7 +1008,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        settings = load_settings(args.config.expanduser().resolve())
+        settings = load_settings(args.config.expanduser().resolve(), args.section)
     except ConfigurationError as exc:
         print(f"配置错误：{exc}")
         return 2

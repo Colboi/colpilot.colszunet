@@ -2,7 +2,7 @@
 
 ## 配置账号
 
-打开项目根目录的 `config.json`，填写 `username` 和 `password`。
+打开 `plugins\colszunet` 目录的 `config.ini`，在 `[colszunet]` 配置节填写 `username` 和 `password`。
 
 `domain` 留空时使用普通账号。账号包含认证域时，可以填写例如 `@cmcc`。
 
@@ -13,7 +13,7 @@
 在项目根目录执行：
 
 ```powershell
-python colszunet.py
+python plugins\colszunet\worker\colszunet.py --config plugins\colszunet\config.ini --section colszunet
 ```
 
 程序每隔 `probe_interval_seconds` 秒访问 `connectivity_test_url`。连续 `failure_threshold` 次访问失败时，程序执行一次校园网登录，并确认外部网站访问已经恢复。

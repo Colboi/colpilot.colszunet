@@ -1,4 +1,3 @@
-import json
 import re
 import subprocess
 import sys
@@ -6,6 +5,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,25 @@ LOG_LINE_PATTERN = re.compile(
     r'^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) '
     r'(?P<level>[A-Z]+) (?P<message>.*)$'
 )
+DEFAULT_CONFIG: dict[str, object] = {
+    'username': '',
+    'password': '',
+    'domain': '',
+    'portal_origin': 'https://net.szu.edu.cn',
+    'ac_id': '12',
+    'device': 'Windows 10',
+    'platform': 'Windows',
+    'connectivity_test_url': 'https://www.baidu.com/',
+    'failure_threshold': 3,
+    'connectivity_timeout_seconds': 8.0,
+    'probe_interval_seconds': 300.0,
+    'login_verify_attempts': 5,
+    'login_verify_interval_seconds': 1.0,
+    'login_retry_cooldown_seconds': 30.0,
+    'request_timeout_seconds': 10.0,
+    'captcha_id': '',
+    'captcha_value': '',
+}
 
 
 class CampusStatusItem(BaseModel):
@@ -54,7 +73,7 @@ class CampusNetworkStatus(BaseModel):
     listener: CampusStatusItem
     history: list[CampusHistoryItem]
     username: str
-    password: str
+    password_configured: bool
     credentials_configured: bool
     probe_interval_seconds: int
     updated_at: str
@@ -70,10 +89,19 @@ class LogRecord:
 class ColszunetPlugin:
     plugin_id = PLUGIN_ID
 
-    def __init__(self, worker_root: Path) -> None:
+    def __init__(
+        self,
+        worker_root: Path,
+        config_store: object,
+        process_registry: Any,
+    ) -> None:
         self.root = worker_root
         self.script_path = worker_root / 'colszunet.py'
-        self.config_path = worker_root / 'config.json'
+        self.config_store = config_store
+        self.process_registry = process_registry
+        self.legacy_config_path = worker_root / 'config.json'
+        self.config_path = config_store.path
+        self._migrate_legacy_config()
         self.log_path = worker_root / 'colszunet.log'
         self.process: subprocess.Popen[bytes] | None = None
         self.lock = threading.Lock()
@@ -122,7 +150,12 @@ class ColszunetPlugin:
         }
 
     def update_settings(self, settings: dict[str, object], enabled: bool) -> None:
-        supported_keys = {'username', 'password', 'probe_interval_seconds'}
+        supported_keys = {
+            'username',
+            'password',
+            'probe_interval_seconds',
+            'clear_credentials',
+        }
         unknown_keys = sorted(set(settings) - supported_keys)
         if unknown_keys:
             raise ValueError(f'unsupported settings: {", ".join(unknown_keys)}')
@@ -132,16 +165,24 @@ class ColszunetPlugin:
         with self.lock:
             config = self._read_config_locked()
             updated_config = dict(config)
-            if 'username' in settings:
-                username = settings['username']
-                if not isinstance(username, str):
-                    raise ValueError('username must be a string')
-                updated_config['username'] = username
-            if 'password' in settings:
-                password = settings['password']
-                if not isinstance(password, str):
-                    raise ValueError('password must be a string')
-                updated_config['password'] = password
+            clear_credentials = settings.get('clear_credentials', False)
+            if not isinstance(clear_credentials, bool):
+                raise ValueError('clear_credentials must be a boolean')
+            if clear_credentials:
+                updated_config['username'] = ''
+                updated_config['password'] = ''
+            else:
+                if 'username' in settings:
+                    username = settings['username']
+                    if not isinstance(username, str):
+                        raise ValueError('username must be a string')
+                    updated_config['username'] = username
+                if 'password' in settings:
+                    password = settings['password']
+                    if not isinstance(password, str):
+                        raise ValueError('password must be a string')
+                    if password or not self._credentials_configured(config):
+                        updated_config['password'] = password
             if 'probe_interval_seconds' in settings:
                 value = settings['probe_interval_seconds']
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 1:
@@ -151,10 +192,7 @@ class ColszunetPlugin:
                 updated_config['probe_interval_seconds'] = int(value)
             if updated_config == config:
                 return
-            self.config_path.write_text(
-                json.dumps(updated_config, ensure_ascii=False, indent=2) + '\n',
-                encoding='utf-8',
-            )
+            self._write_config_locked(updated_config)
             self._stop_locked()
             if enabled and self._credentials_configured(updated_config):
                 self._start_locked()
@@ -179,7 +217,7 @@ class ColszunetPlugin:
             listener=listener,
             history=history,
             username=username,
-            password=password,
+            password_configured=bool(password),
             credentials_configured=credentials_configured,
             probe_interval_seconds=probe_interval_seconds,
             updated_at=now.strftime(LOG_TIMESTAMP_FORMAT),
@@ -190,20 +228,24 @@ class ColszunetPlugin:
             if self.process.poll() is None:
                 return
             self.process.wait()
+            self.process_registry.unregister(self.process)
+            self.process = None
         if not self.script_path.is_file():
             raise FileNotFoundError(f'colszunet script does not exist: {self.script_path}')
-        if not self.config_path.is_file():
-            raise FileNotFoundError(f'colszunet config does not exist: {self.config_path}')
         config = self._read_config_locked()
         if not self._credentials_configured(config):
             self.process = None
             return
-        self.process = subprocess.Popen(
+        if not self.config_path.is_file():
+            raise FileNotFoundError(f'colpilot config does not exist: {self.config_path}')
+        process = subprocess.Popen(
             [
                 sys.executable,
                 str(self.script_path),
                 '--config',
                 str(self.config_path),
+                '--section',
+                self.plugin_id,
             ],
             cwd=self.root,
             stdin=subprocess.DEVNULL,
@@ -211,32 +253,67 @@ class ColszunetPlugin:
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
+        self.process = self.process_registry.register(f'{self.plugin_id}:worker', process)
 
     def _stop_locked(self) -> None:
         if self.process is None:
             return
-        if self.process.poll() is None:
-            subprocess.run(
-                [
-                    'taskkill',
-                    '/PID',
-                    str(self.process.pid),
-                    '/T',
-                    '/F',
-                ],
-                check=False,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        self.process.wait()
+        self.process_registry.stop_process(self.process)
         self.process = None
 
     def _read_config_locked(self) -> dict[str, object]:
-        settings = json.loads(self.config_path.read_text(encoding='utf-8'))
-        if not isinstance(settings, dict):
-            raise ValueError('colszunet config must contain a JSON object')
+        raw_settings = self.config_store.read_section(self.plugin_id)
+        unknown_keys = sorted(set(raw_settings) - set(DEFAULT_CONFIG))
+        if unknown_keys:
+            raise ValueError(f'unsupported saved settings: {", ".join(unknown_keys)}')
+
+        settings = dict(DEFAULT_CONFIG)
+        for key, raw_value in raw_settings.items():
+            default_value = DEFAULT_CONFIG[key]
+            if isinstance(default_value, str):
+                settings[key] = raw_value
+            elif isinstance(default_value, int):
+                settings[key] = self._parse_integer(raw_value, key)
+            elif isinstance(default_value, float):
+                settings[key] = self._parse_number(raw_value, key)
+            else:
+                raise ValueError(f'配置项类型不受支持：{key}')
         return settings
+
+    def _write_config_locked(self, config: dict[str, object]) -> None:
+        self.config_store.update_section(
+            self.plugin_id,
+            config,
+        )
+
+    def _migrate_legacy_config(self) -> None:
+        self.config_store.migrate_json_section(
+            self.plugin_id,
+            self.legacy_config_path,
+            set(DEFAULT_CONFIG),
+            self._should_migrate_legacy_config,
+        )
+
+    @staticmethod
+    def _should_migrate_legacy_config(config: dict[str, object]) -> bool:
+        for key, value in config.items():
+            if key in DEFAULT_CONFIG and value != DEFAULT_CONFIG[key]:
+                return True
+        return False
+
+    @staticmethod
+    def _parse_integer(value: str, key: str) -> int:
+        try:
+            return int(value.strip())
+        except ValueError as error:
+            raise ValueError(f'配置项 {key} 需要使用整数') from error
+
+    @staticmethod
+    def _parse_number(value: str, key: str) -> float:
+        try:
+            return float(value.strip())
+        except ValueError as error:
+            raise ValueError(f'配置项 {key} 需要使用数字') from error
 
     @staticmethod
     def _config_text(config: dict[str, object], key: str) -> str:
@@ -468,5 +545,9 @@ class ColszunetPlugin:
         return record.message == '连通性测试成功' or record.message.startswith('连通性测试失败：')
 
 
-def create_plugin(plugin_root: Path) -> ColszunetPlugin:
-    return ColszunetPlugin(plugin_root / 'worker')
+def create_plugin(
+    plugin_root: Path,
+    config_store: object,
+    process_registry: object,
+) -> ColszunetPlugin:
+    return ColszunetPlugin(plugin_root / 'worker', config_store, process_registry)

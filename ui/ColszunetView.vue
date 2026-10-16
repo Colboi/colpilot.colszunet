@@ -39,7 +39,7 @@ async function loadCampusStatus() {
     campusStatus.value = nextStatus
     if (!campusCredentialsDirty.value && !campusCredentialsSaving.value) {
       campusUsernameInput.value = nextStatus.username
-      campusPasswordInput.value = nextStatus.password
+      campusPasswordInput.value = ''
     }
     if (!campusIntervalDirty.value && !campusSettingsSaving.value) {
       campusIntervalInput.value = nextStatus.probe_interval_seconds
@@ -80,6 +80,7 @@ async function saveCampusCredentials() {
       return
     }
     campusCredentialsDirty.value = false
+    campusPasswordInput.value = ''
     campusCredentialsMessageTone.value = 'success'
     campusCredentialsMessage.value = nextStatus.credentials_configured
       ? '账号密码已自动保存'
@@ -232,6 +233,7 @@ onBeforeUnmount(() => {
             v-model="campusPasswordInput"
             type="password"
             autocomplete="current-password"
+            placeholder="留空保持当前密码"
             aria-label="校园网密码"
             @input="markCampusCredentialsDirty"
           />
